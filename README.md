@@ -38,8 +38,9 @@ It's idempotent: run it again to update the same records.
     and ERROR stay "requested", and can't be closed complete, until someone **other than the requester
     or opener** approves.
 
-`APPROVER_USER` is pinned in the admin-only property `dugganusa.membrane.approver`. Only that person's
-approval releases a REVIEW or ERROR item, and never for a request they made or opened themselves. Choose
+`APPROVER_USER` is pinned in the admin-only property `dugganusa.membrane.approver`. Only an approval that
+names that person *and was last written by that person* (the platform's `sys_updated_by`) releases a REVIEW
+or ERROR item, and never for a request they made or opened themselves. Choose
 someone who doesn't request packages.
 
 **Status: reference implementation.** Automated security reviews broke every version the day it was written.
@@ -78,7 +79,8 @@ and each finding became a fix:
 - v3 trusted any work note and allowed self-approval and package swaps.
 - v4 rejected genuine seals because the digest is uppercase; it failed closed, so nothing slipped through.
 
-**Limits, stated plainly.** Business rules can't stop an instance admin who edits the journal,
+**Limits, stated plainly.** Business rules can't stop an instance admin who edits the journal, writes records with
+`autoSysFields(false)`,
 deactivates the rules, or runs a script with `setWorkflow(false)`. That's platform admin power; pair
 this with your change-control and admin-audit policies, which is what they're for.
 
