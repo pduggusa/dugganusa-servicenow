@@ -95,6 +95,15 @@
   //    so the platform's request-level auto-approval could cascade "approved" onto REVIEW and BLOCK
   //    items). Now: decide synchronously right after insert (variables exist then); create the approver; and a guard
   //    reverts any later attempt to approve a gated item that still has a pending approval or a BLOCK.
+  // Seal secret (security review of the public v3: a work note is forgeable by anyone who can add one).
+  // Admin-only, private (never in update sets). The gate seals its verdict with it; the guard verifies.
+  var prop = new GlideRecord('sys_properties'); prop.addQuery('name', 'dugganusa.membrane.seal_secret'); prop.query();
+  if (!prop.next()) {
+    prop.initialize(); prop.setValue('name', 'dugganusa.membrane.seal_secret'); prop.setValue('type', 'password2');
+    prop.setValue('value', gs.generateGUID() + gs.generateGUID()); prop.setValue('read_roles', 'admin'); prop.setValue('write_roles', 'admin');
+    prop.setValue('private', true); prop.setValue('description', 'DugganUSA Membrane: seals gate verdicts so they cannot be forged in a work note.'); prop.insert();
+    gs.info('[membrane-setup] created seal secret (admin-only, private)');
+  }
   var approver = new GlideRecord('sys_user'); approver.get('user_name', APPROVER_USER);
   var approverId = approver.isValidRecord() ? approver.getUniqueValue() : '';
   // The verdict of record is the FIRST "DugganUSA Membrane verdict:" work note: journal entries can't be
@@ -107,7 +116,10 @@
     "    name = current.variables.dusa_package_name + ''; eco = current.variables.dusa_ecosystem + ''; ver = current.variables.dusa_version + '';",
     "    res = new global.DugganUSAMembrane().checkPackage(name, eco, ver);",
     "  } catch (e) { res = { verdict: 'error', reason: 'gate failed: ' + e }; }",
-    "  current.work_notes = 'DugganUSA Membrane verdict: ' + res.verdict.toUpperCase() + ' for ' + eco + ' ' + name + (ver ? '@' + ver : '') + '\\nReason: ' + res.reason + (res.source ? '\\nSource: ' + res.source : '');",
+    "  // Seal binds the verdict to THIS item and THESE exact values (a later edit to the package voids it).",
+    "  var payload = [current.getUniqueValue(), res.verdict, eco, name, ver].join('|');",
+    "  var seal = new GlideDigest().getSHA256Hex(gs.getProperty('dugganusa.membrane.seal_secret') + '|' + payload);",
+    "  current.work_notes = 'DugganUSA Membrane verdict: ' + res.verdict.toUpperCase() + ' for ' + eco + ' ' + name + (ver ? '@' + ver : '') + '\\nReason: ' + res.reason + (res.source ? '\\nSource: ' + res.source : '') + '\\nSeal: ' + seal + ' ' + encodeURIComponent(payload);",
     "  current.short_description = 'Package request (Membrane: ' + res.verdict + ') ' + eco + ' ' + name + (ver ? '@' + ver : '');  // display only",
     "  if (res.verdict === 'block') { current.approval = 'rejected'; current.state = 4; }",
     "  else if (res.verdict === 'allow') { current.approval = 'approved'; }",
@@ -126,19 +138,33 @@
     "  // Scope check in the script, not a filter: moving an item to another catalog item must not escape the guard.",
     "  var CAT = '" + catId + "'; if (current.cat_item != CAT && !(previous && previous.cat_item == CAT)) return;",
     "  if (previous && previous.cat_item == CAT && current.cat_item != CAT) { current.cat_item = CAT; gs.warn('[membrane-guard] kept catalog item on ' + current.number); }",
-    "  // Verdict of record: the first Membrane work note (journal, not an editable field). None = error.",
+    "  // Verdict of record: the first Membrane work note whose SEAL verifies (admin-only secret), bound to",
+    "  // this item and its current package values. A forged note, an edited package, or no note at all = error.",
+    "  var secret = gs.getProperty('dugganusa.membrane.seal_secret'), verdict = 'error';",
+    "  var cur = [current.getUniqueValue(), '', current.variables.dusa_ecosystem + '', current.variables.dusa_package_name + '', current.variables.dusa_version + ''];",
     "  var j = new GlideRecord('sys_journal_field'); j.addQuery('element_id', current.getUniqueValue()); j.addQuery('element', 'work_notes');",
-    "  j.addQuery('value', 'STARTSWITH', 'DugganUSA Membrane verdict:'); j.orderBy('sys_created_on'); j.setLimit(1); j.query();",
-    "  var verdict = 'error';",
-    "  if (j.next()) { var m = /^DugganUSA Membrane verdict: (ALLOW|REVIEW|BLOCK|ERROR)/.exec(j.value + ''); if (m) verdict = m[1].toLowerCase(); }",
-    "  else if (current.isNewRecord()) return;  // the gate writes the verdict right after insert",
+    "  j.addQuery('value', 'STARTSWITH', 'DugganUSA Membrane verdict:'); j.orderBy('sys_created_on'); j.query();",
+    "  var sawNote = false;",
+    "  while (j.next()) {",
+    "    sawNote = true;",
+    "    var sm = /\\nSeal: ([0-9a-f]{64}) (\\S+)$/.exec(j.value + ''); if (!sm || !secret) continue;",
+    "    var payload = decodeURIComponent(sm[2]);",
+    "    if (new GlideDigest().getSHA256Hex(secret + '|' + payload) != sm[1]) { gs.warn('[membrane-guard] ignored forged verdict note on ' + current.number); continue; }",
+    "    var parts = payload.split('|'); cur[1] = parts[1];",
+    "    if (parts[0] != cur[0]) continue;",
+    "    if (parts.join('|') != cur.join('|')) { gs.warn('[membrane-guard] package changed after the verdict on ' + current.number + ': verdict void'); verdict = 'error'; break; }",
+    "    verdict = parts[1]; break;",
+    "  }",
+    "  if (!sawNote && current.isNewRecord()) return;  // the gate writes the sealed verdict right after insert",
     "  if (verdict === 'allow') return;",
     "  if (verdict === 'block') {",
     "    if (current.approval != 'rejected' || current.state != 4) { current.approval = 'rejected'; current.state = 4; gs.warn('[membrane-guard] kept BLOCK rejected and closed on ' + current.number); }",
     "    return;",
     "  }",
     "  // review / error: nothing proceeds until a person's approval record says approved.",
-    "  var ok = new GlideRecord('sysapproval_approver'); ok.addQuery('sysapproval', current.getUniqueValue()); ok.addQuery('state', 'approved'); ok.query();",
+    "  // A person's approval counts only if that person is not the requester or the opener (no self-approval).",
+    "  var ok = new GlideRecord('sysapproval_approver'); ok.addQuery('sysapproval', current.getUniqueValue()); ok.addQuery('state', 'approved');",
+    "  ok.addQuery('approver', '!=', current.request.requested_for + ''); ok.addQuery('approver', '!=', current.opened_by + ''); ok.query();",
     "  if (ok.hasNext()) return;",
     "  if (current.approval != 'requested') { gs.warn('[membrane-guard] reverted approval ' + current.approval + ' -> requested on ' + current.number + ' (' + verdict + ')'); current.approval = 'requested'; }",
     "  if (current.state == 3) { gs.warn('[membrane-guard] reverted Closed Complete on unapproved ' + current.number); current.state = previous ? previous.state : 1; }",
