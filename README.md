@@ -38,7 +38,13 @@ It's idempotent: run it again to update the same records.
     and ERROR stay "requested", and can't be closed complete, until someone **other than the requester
     or opener** approves.
 
-`APPROVER_USER` must be a person who doesn't request packages themselves. Self-approval doesn't count.
+`APPROVER_USER` is pinned in the admin-only property `dugganusa.membrane.approver`. Only that person's
+approval releases a REVIEW or ERROR item, and never for a request they made or opened themselves. Choose
+someone who doesn't request packages.
+
+**Status: reference implementation.** Automated security reviews broke every version the day it was written.
+Each finding is fixed and tested above. Have your ServiceNow security team review it before production,
+and keep the guard's ordering (it must run last) intact.
 
 Undo: delete the Script Include, the catalog item and the rules named "DugganUSA Membrane". Nothing
 else is changed.

@@ -106,6 +106,13 @@
   }
   var approver = new GlideRecord('sys_user'); approver.get('user_name', APPROVER_USER);
   var approverId = approver.isValidRecord() ? approver.getUniqueValue() : '';
+  // The approver of record is pinned in an admin-only property: an "approved" approval record from anyone
+  // else (inserted by someone with table write access) does not count (security review of v4.2).
+  var ap0 = new GlideRecord('sys_properties'); ap0.addQuery('name', 'dugganusa.membrane.approver'); ap0.query();
+  if (!ap0.next()) { ap0.initialize(); ap0.setValue('name', 'dugganusa.membrane.approver'); }
+  ap0.setValue('type', 'string'); ap0.setValue('value', approverId); ap0.setValue('read_roles', 'admin'); ap0.setValue('write_roles', 'admin');
+  ap0.setValue('description', 'DugganUSA Membrane: the only user whose approval releases a REVIEW or ERROR item.');
+  ap0.isValidRecord() ? ap0.update() : ap0.insert();
   // The verdict of record is the FIRST "DugganUSA Membrane verdict:" work note: journal entries can't be
   // edited by requesters or fulfillers, unlike short_description (an automated security review found the
   // guard trusted a field any editor could rewrite). short_description is display only.
@@ -169,7 +176,8 @@
     "  // review / error: nothing proceeds until a person's approval record says approved.",
     "  // A person's approval counts only if that person is not the requester or the opener (no self-approval).",
     "  var ok = new GlideRecord('sysapproval_approver'); ok.addQuery('sysapproval', current.getUniqueValue()); ok.addQuery('state', 'approved');",
-    "  ok.addQuery('approver', '!=', current.request.requested_for + ''); ok.addQuery('approver', '!=', current.opened_by + ''); ok.query();",
+    "  var pinned = gs.getProperty('dugganusa.membrane.approver'); if (!pinned) pinned = 'none';  // no pinned approver = nothing releases",
+    "  ok.addQuery('approver', pinned); ok.addQuery('approver', '!=', current.request.requested_for + ''); ok.addQuery('approver', '!=', current.opened_by + ''); ok.query();",
     "  if (ok.hasNext()) return;",
     "  if (current.approval != 'requested') { gs.warn('[membrane-guard] reverted approval ' + current.approval + ' -> requested on ' + current.number + ' (' + verdict + ')'); current.approval = 'requested'; }",
     "  if (current.state == 3) { gs.warn('[membrane-guard] reverted Closed Complete on unapproved ' + current.number); current.state = previous ? previous.state : 1; }",
