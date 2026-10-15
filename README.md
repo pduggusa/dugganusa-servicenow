@@ -26,13 +26,19 @@ It's idempotent: run it again to update the same records.
 
 - Script Include `DugganUSAMembrane`: calls the public package check (no API key needed).
 - Catalog item **Install a software package** with three variables: name, ecosystem, version.
+- An admin-only, private system property `dugganusa.membrane.seal_secret` (created once).
 - Two business rules on `sc_req_item`:
-  - **gate (sync)**: decides right after insert, when catalog variables exist; creates the approval for
-    REVIEW and error; any exception becomes ERROR, which waits for a person.
-  - **guard**: runs last on every update of a gated item (and of any item moved away from it). The
-    verdict of record is the first "DugganUSA Membrane verdict" work note in the journal, never an
-    editable field. No verdict means ERROR. BLOCK stays rejected and closed. REVIEW and ERROR stay
-    "requested", and can't be closed complete, until a person's approval record says approved.
+  - **gate (sync)**: decides right after insert, when catalog variables exist. It writes the verdict to
+    the work notes with a **seal**, a SHA-256 over the item, the verdict and the exact package values,
+    keyed by the admin-only secret. It also creates the approval for REVIEW and error. Any exception
+    becomes ERROR, which waits for a person.
+  - **guard**: runs last on every update of a gated item, and of any item moved away from it. It honors
+    only a verdict whose seal verifies and whose package values still match the item, so a forged
+    note, an edited package or a missing note all mean ERROR. BLOCK stays rejected and closed. REVIEW
+    and ERROR stay "requested", and can't be closed complete, until someone **other than the requester
+    or opener** approves.
+
+`APPROVER_USER` must be a person who doesn't request packages themselves. Self-approval doesn't count.
 
 Undo: delete the Script Include, the catalog item and the rules named "DugganUSA Membrane". Nothing
 else is changed.
@@ -44,22 +50,27 @@ instance or your data.
 
 ## Verified (adversarially)
 
-ServiceNow Brazil developer instance, 2026-10-15:
+ServiceNow Brazil developer instance, 2026-10-15, v4.1:
 
 | Test | Result |
 |---|---|
 | npm zod 3.23.8 / npm lodash 4.17.21 / RubyGems eth-keystore-utils | approved / requested / rejected + Closed Incomplete |
-| Rewrite the display field to "allow", then approve a BLOCK | reverted: rejected, closed |
-| Set a REVIEW to "not required" | reverted to requested |
-| Close a REVIEW as complete without approval | reverted to open |
-| Move a REVIEW to another catalog item, then approve | catalog item restored, approval reverted |
+| Forged ALLOW note with a fake seal on a BLOCK, then approve | rejected, closed |
+| Forged unsealed ALLOW note on a REVIEW, then approve | requested |
+| Swap an ALLOW item's package to a malicious one | verdict void, back to requested |
+| Requester approves their own REVIEW | refused, requested |
+| Set a REVIEW to "not required" / close it as complete | reverted (v3 tests) |
+| Move a REVIEW to another catalog item, then approve | restored, reverted (v3 tests) |
 | The platform's own request-level cascade | reverted (logged) |
-| A person approves the approval record, then the item | approved, as intended |
+| A different person approves | approved, as intended |
 
-**How it got here.** Three automated security reviews, three fixes, all the same day: v1 ran async and the
-platform's auto-approval cascaded over REVIEW and BLOCK (fail-open); v2 trusted an editable field and
-missed "not required", "closed complete", and a missing verdict; v3 reads the verdict from the
-journal, fails closed on no verdict, and guards every route above.
+**How it got here.** Automated security reviews broke each version the same day it was written,
+and each finding became a fix:
+
+- v1 ran async, so the platform's auto-approval cascaded over REVIEW and BLOCK.
+- v2 trusted an editable field.
+- v3 trusted any work note and allowed self-approval and package swaps.
+- v4 rejected genuine seals because the digest is uppercase; it failed closed, so nothing slipped through.
 
 **Limits, stated plainly.** Business rules can't stop an instance admin who edits the journal,
 deactivates the rules, or runs a script with `setWorkflow(false)`. That's platform admin power; pair
