@@ -1,5 +1,7 @@
 # DugganUSA Membrane for ServiceNow
 
+**Docs:** https://docs.dugganusa.com/agents/check-package/
+
 Verdicts as approval stages. A catalog request to install a software package is checked by the
 DugganUSA Membrane before anyone acts on it:
 
